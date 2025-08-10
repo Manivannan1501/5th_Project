@@ -1,6 +1,9 @@
-streamlit
+streamlit>=1.18
 opencv-python-headless
-tensorflow
+tensorflow>=2.11
 scikit-learn
 matplotlib
 seaborn
+numpy
+tqdm
+Pillow

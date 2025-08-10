@@ -4,10 +4,18 @@ import zipfile
 import shutil
 import random
 import numpy as np
-import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+
+# Force headless OpenCV for Streamlit Cloud / server environments
+try:
+    import cv2
+except ImportError:
+    import pip
+    pip.main(["install", "opencv-python-headless"])
+    import cv2
+
 from tensorflow.keras.applications import ResNet50, VGG16, EfficientNetB0
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
@@ -15,6 +23,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
 import tempfile
+
 
 # -----------------------------
 # Utility Functions

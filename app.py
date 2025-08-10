@@ -7,23 +7,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-
-# Force headless OpenCV for Streamlit Cloud / server environments
-try:
-    import cv2
-except ImportError:
-    import pip
-    pip.main(["install", "opencv-python-headless"])
-    import cv2
+import cv2  # headless version will be installed via requirements.txt
 
 from tensorflow.keras.applications import ResNet50, VGG16, EfficientNetB0
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.optimizers import Adam
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from sklearn.metrics import classification_report, confusion_matrix
 import tempfile
-
 
 # -----------------------------
 # Utility Functions
@@ -257,8 +249,10 @@ elif page == "Prediction":
             img_array = np.expand_dims(img_resized, axis=0)
 
             preds = st.session_state["model"].predict(img_array)
-            class_names = list(st.session_state["model"].classes_.keys()) if hasattr(st.session_state["model"], "classes_") else ["TB", "Normal"]
+            class_names = ["TB", "Normal"]
             predicted_class = class_names[np.argmax(preds)]
             confidence = np.max(preds) * 100
 
-            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=f"Prediction: {predicted_class} ({confidence:.2f}%)", use_column_width=True)
+            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+                     caption=f"Prediction: {predicted_class} ({confidence:.2f}%)",
+                     use_column_width=True)

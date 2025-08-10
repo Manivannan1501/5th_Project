@@ -6,3 +6,5 @@ tqdm
 tensorflow
 scikit-learn
 numpy
+Pillow
+zipfile36

@@ -82,6 +82,39 @@ def build_model(arch, input_shape=(224, 224, 3)):
 
 
 # ---------------------------
+# Cache: extract dataset once per upload
+# ---------------------------
+@st.cache_resource
+def extract_dataset(uploaded_file):
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(tmp_dir, "dataset.zip")
+    with open(zip_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(tmp_dir)
+
+    tb_dir = find_class_dir(tmp_dir, "TB")
+    normal_dir = find_class_dir(tmp_dir, "NORMAL")
+
+    if not tb_dir or not normal_dir:
+        return None, None, None
+
+    return tb_dir, normal_dir, tmp_dir
+
+
+# ---------------------------
+# Cache: split dataset based on ratios
+# ---------------------------
+@st.cache_resource
+def prepare_split(tb_dir, normal_dir, train_ratio, val_ratio, test_ratio):
+    target_dir = tempfile.mkdtemp()
+    split_dataset(tb_dir, normal_dir, target_dir,
+                  train_ratio/100, val_ratio/100, test_ratio/100)
+    return target_dir
+
+
+# ---------------------------
 # Streamlit UI
 # ---------------------------
 st.title("Tuberculosis Detection App")
@@ -95,74 +128,62 @@ model_choice = st.selectbox("Model Architecture", ["ResNet50", "VGG16", "Efficie
 epochs = st.slider("Training Epochs", 1, 10, 3)
 
 if uploaded_file is not None:
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        zip_path = os.path.join(tmp_dir, "dataset.zip")
-        with open(zip_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+    tb_dir, normal_dir, base_tmp = extract_dataset(uploaded_file)
 
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(tmp_dir)
+    if tb_dir is None:
+        st.error("Could not find TB and NORMAL folders in ZIP.")
+    else:
+        target_dir = prepare_split(tb_dir, normal_dir, train_ratio, val_ratio, test_ratio)
 
-        tb_dir = find_class_dir(tmp_dir, "TB")
-        normal_dir = find_class_dir(tmp_dir, "NORMAL")
+        # Show counts
+        for split in ["train", "val", "test"]:
+            tb_count = len(os.listdir(os.path.join(target_dir, split, "TB")))
+            normal_count = len(os.listdir(os.path.join(target_dir, split, "NORMAL")))
+            st.write(f"**{split.capitalize()}** — TB: {tb_count}, NORMAL: {normal_count}")
 
-        if not tb_dir or not normal_dir:
-            st.error("Could not find TB and NORMAL folders in ZIP.")
-        else:
-            target_dir = os.path.join(tmp_dir, "split_data")
-            split_dataset(tb_dir, normal_dir, target_dir,
-                          train_ratio/100, val_ratio/100, test_ratio/100)
-            st.success("Dataset split completed!")
+        # Data generators
+        datagen = ImageDataGenerator(rescale=1./255)
+        train_gen = datagen.flow_from_directory(os.path.join(target_dir, "train"), target_size=(224, 224), batch_size=32, class_mode="binary")
+        val_gen = datagen.flow_from_directory(os.path.join(target_dir, "val"), target_size=(224, 224), batch_size=32, class_mode="binary")
+        test_gen = datagen.flow_from_directory(os.path.join(target_dir, "test"), target_size=(224, 224), batch_size=32, class_mode="binary", shuffle=False)
 
-            # Show counts
-            for split in ["train", "val", "test"]:
-                tb_count = len(os.listdir(os.path.join(target_dir, split, "TB")))
-                normal_count = len(os.listdir(os.path.join(target_dir, split, "NORMAL")))
-                st.write(f"**{split.capitalize()}** — TB: {tb_count}, NORMAL: {normal_count}")
+        # Build & train
+        model = build_model(model_choice)
+        history = model.fit(train_gen, validation_data=val_gen, epochs=epochs)
 
-            # Data generators
-            datagen = ImageDataGenerator(rescale=1./255)
-            train_gen = datagen.flow_from_directory(os.path.join(target_dir, "train"), target_size=(224, 224), batch_size=32, class_mode="binary")
-            val_gen = datagen.flow_from_directory(os.path.join(target_dir, "val"), target_size=(224, 224), batch_size=32, class_mode="binary")
-            test_gen = datagen.flow_from_directory(os.path.join(target_dir, "test"), target_size=(224, 224), batch_size=32, class_mode="binary", shuffle=False)
+        # Plot training history
+        fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+        ax[0].plot(history.history["accuracy"], label="train_acc")
+        ax[0].plot(history.history["val_accuracy"], label="val_acc")
+        ax[0].set_title("Accuracy")
+        ax[0].legend()
 
-            # Build & train
-            model = build_model(model_choice)
-            history = model.fit(train_gen, validation_data=val_gen, epochs=epochs)
+        ax[1].plot(history.history["loss"], label="train_loss")
+        ax[1].plot(history.history["val_loss"], label="val_loss")
+        ax[1].set_title("Loss")
+        ax[1].legend()
+        st.pyplot(fig)
 
-            # Plot training history
-            fig, ax = plt.subplots(1, 2, figsize=(12, 4))
-            ax[0].plot(history.history["accuracy"], label="train_acc")
-            ax[0].plot(history.history["val_accuracy"], label="val_acc")
-            ax[0].set_title("Accuracy")
-            ax[0].legend()
+        # Evaluate
+        preds = model.predict(test_gen)
+        y_true = test_gen.classes
+        y_pred = (preds > 0.5).astype(int).ravel()
 
-            ax[1].plot(history.history["loss"], label="train_loss")
-            ax[1].plot(history.history["val_loss"], label="val_loss")
-            ax[1].set_title("Loss")
-            ax[1].legend()
-            st.pyplot(fig)
+        st.text("Classification Report:")
+        st.text(classification_report(y_true, y_pred))
 
-            # Evaluate
-            preds = model.predict(test_gen)
-            y_true = test_gen.classes
-            y_pred = (preds > 0.5).astype(int).ravel()
+        cm = confusion_matrix(y_true, y_pred)
+        fig, ax = plt.subplots()
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["NORMAL", "TB"], yticklabels=["NORMAL", "TB"])
+        st.pyplot(fig)
 
-            st.text("Classification Report:")
-            st.text(classification_report(y_true, y_pred))
-
-            cm = confusion_matrix(y_true, y_pred)
-            fig, ax = plt.subplots()
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["NORMAL", "TB"], yticklabels=["NORMAL", "TB"])
-            st.pyplot(fig)
-
-            # ROC curve
-            fpr, tpr, _ = roc_curve(y_true, preds)
-            roc_auc = auc(fpr, tpr)
-            fig, ax = plt.subplots()
-            ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
-            ax.plot([0, 1], [0, 1], linestyle="--")
-            ax.set_xlabel("False Positive Rate")
-            ax.set_ylabel("True Positive Rate")
-            ax.legend()
-            st.pyplot(fig)
+        # ROC curve
+        fpr, tpr, _ = roc_curve(y_true, preds)
+        roc_auc = auc(fpr, tpr)
+        fig, ax = plt.subplots()
+        ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+        ax.plot([0, 1], [0, 1], linestyle="--")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.legend()
+        st.pyplot(fig)

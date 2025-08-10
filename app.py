@@ -1,15 +1,3 @@
-"""
-app.py - Streamlit TB Detection (MobileNetV2 base)
-Features:
-- Instant load using MobileNetV2 (ImageNet weights) as base.
-- Upload ZIP (auto-find TB & NORMAL folders anywhere inside).
-- Split dataset on-demand (button).
-- Augmentation preview.
-- Optional retrain/fine-tune on-demand.
-- Upload your own .h5 model for immediate inference.
-Note: Use opencv-python-headless in requirements for cloud.
-"""
-
 import streamlit as st
 import os
 import zipfile

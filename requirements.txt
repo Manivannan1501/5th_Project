@@ -1,10 +1,6 @@
 streamlit
 opencv-python-headless
-matplotlib
-seaborn
-tqdm
 tensorflow
 scikit-learn
-numpy
-Pillow
-zipfile36
+matplotlib
+seaborn

@@ -1,9 +1,4 @@
-streamlit>=1.18
-opencv-python-headless
-tensorflow>=2.11
-scikit-learn
-matplotlib
-seaborn
-numpy
-tqdm
-Pillow
+streamlit==1.36.0
+tensorflow-cpu==2.15.0
+numpy==1.26.4
+pillow==10.4.0

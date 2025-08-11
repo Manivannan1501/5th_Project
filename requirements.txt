@@ -1,4 +1,7 @@
 streamlit==1.36.0
-tensorflow-cpu==2.15.0
 numpy==1.26.4
 pillow==10.4.0
+
+# TensorFlow version automatically matched to Python version
+tensorflow-cpu>=2.14.0,<2.16.0; python_version < "3.12"
+tensorflow-cpu>=2.16.1; python_version >= "3.12"

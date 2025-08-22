@@ -1,216 +1,229 @@
 import streamlit as st
+import zipfile
+import os
+import shutil
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 import cv2
-import tempfile
-import zipfile
-import shutil
+from PIL import Image
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import ResNet50, VGG16, EfficientNetB0
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
-from tensorflow.keras.optimizers import Adam
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
-from PIL import Image
 
-# -------------------------------
-# Sidebar Navigation
-# -------------------------------
-PAGES = ["Introduction", "EDA", "Training", "Evaluation", "Prediction"]
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", PAGES)
-
-# -------------------------------
+# ---------------------
 # Helper Functions
-# -------------------------------
-def load_image(img_file):
-    img = cv2.imdecode(np.frombuffer(img_file.read(), np.uint8), 1)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return img
+# ---------------------
+def unzip_dataset(uploaded_file):
+    dataset_path = "dataset"
+    if os.path.exists(dataset_path):
+        shutil.rmtree(dataset_path)
+    os.makedirs(dataset_path, exist_ok=True)
+    with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+        zip_ref.extractall(dataset_path)
+    return dataset_path
 
-def build_model(model_name, input_shape=(224,224,3)):
-    if model_name == "ResNet50":
-        base_model = ResNet50(weights="imagenet", include_top=False, input_shape=input_shape)
-    elif model_name == "VGG16":
-        base_model = VGG16(weights="imagenet", include_top=False, input_shape=input_shape)
+def get_class_distribution(dataset_path):
+    class_counts = {}
+    for root, dirs, files in os.walk(dataset_path):
+        if len(files) > 0:
+            label = os.path.basename(root)
+            img_files = [f for f in files if os.path.isfile(os.path.join(root, f))]
+            if len(img_files) > 0:
+                class_counts[label] = class_counts.get(label, 0) + len(img_files)
+    return class_counts
+
+# ---------------------
+# Streamlit App
+# ---------------------
+st.title("🫁 Tuberculosis Detection using Deep Learning")
+menu = ["Introduction", "EDA", "Training", "Evaluation", "Prediction"]
+choice = st.sidebar.selectbox("Navigation", menu)
+
+if "dataset_path" not in st.session_state:
+    st.session_state.dataset_path = None
+if "model" not in st.session_state:
+    st.session_state.model = None
+if "history" not in st.session_state:
+    st.session_state.history = None
+if "train_gen" not in st.session_state:
+    st.session_state.train_gen = None
+if "val_gen" not in st.session_state:
+    st.session_state.val_gen = None
+
+# ---------------------
+# Introduction
+# ---------------------
+if choice == "Introduction":
+    st.subheader("Project Overview")
+    st.write("""
+    This app demonstrates Tuberculosis detection using Deep Learning.
+    You can upload a dataset of chest X-ray images, explore it, train models (ResNet50, VGG16, EfficientNetB0),
+    evaluate performance, and make predictions.
+    """)
+    uploaded_file = st.file_uploader("Upload a dataset (.zip)", type="zip")
+    if uploaded_file:
+        st.session_state.dataset_path = unzip_dataset(uploaded_file)
+        st.success("Dataset uploaded and extracted successfully!")
+
+# ---------------------
+# EDA
+# ---------------------
+if choice == "EDA" and st.session_state.dataset_path:
+    st.subheader("Exploratory Data Analysis")
+    dataset_path = st.session_state.dataset_path
+
+    class_counts = get_class_distribution(dataset_path)
+    st.write("Class Distribution:", class_counts)
+
+    fig, ax = plt.subplots()
+    sns.barplot(x=list(class_counts.keys()), y=list(class_counts.values()), ax=ax)
+    ax.set_title("Class Distribution")
+    st.pyplot(fig)
+
+    st.write("Sample Images:")
+    num_images = st.slider("Images per class", 4, 20, 8)
+
+    for c in class_counts.keys():
+        c_dir = None
+        # find actual folder path
+        for root, dirs, files in os.walk(dataset_path):
+            if os.path.basename(root) == c:
+                c_dir = root
+                break
+        if c_dir:
+            files = [f for f in os.listdir(c_dir) if os.path.isfile(os.path.join(c_dir, f))]
+            sample_files = files[:num_images]
+            cols = st.columns(min(4, len(sample_files)))
+            for idx, f in enumerate(sample_files):
+                img_path = os.path.join(c_dir, f)
+                try:
+                    img = Image.open(img_path)
+                    cols[idx % 4].image(img, caption=c, use_column_width=True)
+                except:
+                    continue
+
+# ---------------------
+# Training
+# ---------------------
+if choice == "Training" and st.session_state.dataset_path:
+    st.subheader("Train Model")
+    dataset_path = st.session_state.dataset_path
+
+    model_name = st.selectbox("Select Model", ["ResNet50", "VGG16", "EfficientNetB0"])
+    epochs = st.slider("Epochs", 1, 20, 5)
+    val_split = st.slider("Validation Split %", 10, 50, 20) / 100.0
+    img_size = (224, 224)
+
+    # Detect train/val/test
+    train_dir, val_dir, test_dir = None, None, None
+    if os.path.isdir(os.path.join(dataset_path, "train")):
+        train_dir = os.path.join(dataset_path, "train")
+        if os.path.isdir(os.path.join(dataset_path, "val")):
+            val_dir = os.path.join(dataset_path, "val")
+        else:
+            # Split train into train/val
+            tmp_train, tmp_val = "split_train", "split_val"
+            if os.path.exists(tmp_train): shutil.rmtree(tmp_train)
+            if os.path.exists(tmp_val): shutil.rmtree(tmp_val)
+            shutil.copytree(train_dir, tmp_train)
+            shutil.copytree(train_dir, tmp_val)
+            train_dir, val_dir = tmp_train, tmp_val
+        if os.path.isdir(os.path.join(dataset_path, "test")):
+            test_dir = os.path.join(dataset_path, "test")
     else:
-        base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=input_shape)
-    
+        # Flat dataset, split manually
+        tmp_base = "split_dataset"
+        if os.path.exists(tmp_base): shutil.rmtree(tmp_base)
+        os.makedirs(tmp_base, exist_ok=True)
+        for c in os.listdir(dataset_path):
+            c_path = os.path.join(dataset_path, c)
+            if os.path.isdir(c_path):
+                files = [f for f in os.listdir(c_path) if os.path.isfile(os.path.join(c_path, f))]
+                train_files, val_files = train_test_split(files, test_size=val_split, random_state=42)
+                os.makedirs(os.path.join(tmp_base, "train", c), exist_ok=True)
+                os.makedirs(os.path.join(tmp_base, "val", c), exist_ok=True)
+                for f in train_files:
+                    shutil.copy(os.path.join(c_path, f), os.path.join(tmp_base, "train", c, f))
+                for f in val_files:
+                    shutil.copy(os.path.join(c_path, f), os.path.join(tmp_base, "val", c, f))
+        train_dir, val_dir = os.path.join(tmp_base, "train"), os.path.join(tmp_base, "val")
+
+    datagen = ImageDataGenerator(rescale=1./255)
+    train_gen = datagen.flow_from_directory(train_dir, target_size=img_size, batch_size=32, class_mode="binary")
+    val_gen = datagen.flow_from_directory(val_dir, target_size=img_size, batch_size=32, class_mode="binary")
+
+    base_model = None
+    if model_name == "ResNet50":
+        base_model = ResNet50(weights="imagenet", include_top=False, input_shape=img_size + (3,))
+    elif model_name == "VGG16":
+        base_model = VGG16(weights="imagenet", include_top=False, input_shape=img_size + (3,))
+    elif model_name == "EfficientNetB0":
+        base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=img_size + (3,))
+
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
-    x = Dropout(0.5)(x)
     preds = Dense(1, activation="sigmoid")(x)
-    
     model = Model(inputs=base_model.input, outputs=preds)
+
     for layer in base_model.layers:
         layer.trainable = False
-    model.compile(optimizer=Adam(1e-4), loss="binary_crossentropy", metrics=["accuracy"])
-    return model
 
-def handle_dataset_upload():
-    uploaded_file = st.file_uploader("Upload dataset (zip file with class subfolders or train/val/test)", type=["zip"])
-    if uploaded_file:
-        tmp_dir = tempfile.mkdtemp()
-        with zipfile.ZipFile(uploaded_file, "r") as zip_ref:
-            zip_ref.extractall(tmp_dir)
-        st.success("Dataset extracted successfully!")
-        return tmp_dir
-    return None
+    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
 
-def detect_dataset_structure(base_path):
-    """Detect if dataset has train/val/test structure or just class folders."""
-    subdirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
-    if set([s.lower() for s in subdirs]) >= set(["train", "test"]):
-        return "split"
-    return "flat"
-
-# -------------------------------
-# Pages
-# -------------------------------
-if page == "Introduction":
-    st.title("Tuberculosis Detection Using Deep Learning")
-    st.write("""
-    This app allows you to:
-    - Upload dataset as a zip file
-    - Explore the dataset (EDA)
-    - Train deep learning models (ResNet50, VGG16, EfficientNetB0)
-    - Evaluate models with metrics and plots
-    - Upload chest X-ray images for TB prediction
-    """)
-
-elif page == "EDA":
-    st.title("Exploratory Data Analysis")
-    dataset_path = handle_dataset_upload()
-    if dataset_path:
-        dataset_type = detect_dataset_structure(dataset_path)
-        st.write(f"Detected dataset type: **{dataset_type}**")
-
-        # Recursive scan of images
-        img_paths, labels = [], []
-        for root, dirs, files in os.walk(dataset_path):
-            for f in files:
-                if f.lower().endswith((".jpg", ".jpeg", ".png")):
-                    img_paths.append(os.path.join(root, f))
-                    labels.append(os.path.basename(os.path.dirname(os.path.join(root, f))))
-
-        if img_paths:
-            df = pd.DataFrame({"image": img_paths, "label": labels})
-            st.write(df.head())
-
-            fig, ax = plt.subplots()
-            sns.countplot(x="label", data=df)
-            st.pyplot(fig)
-
-            # Show grid of images per class
-            st.subheader("Sample Images from Dataset")
-            sample_count = st.slider("Number of images per class to preview", 4, 20, 8)
-            classes = df["label"].unique()
-            for c in classes:
-                class_imgs = df[df["label"] == c]["image"].tolist()[:sample_count]
-                if class_imgs:
-                    st.markdown(f"**Class: {c}**")
-                    cols = st.columns(min(4, len(class_imgs)))
-                    for idx, img_path in enumerate(class_imgs):
-                        if os.path.isfile(img_path):
-                            img_pil = Image.open(img_path)
-                            with cols[idx % 4]:
-                                st.image(img_pil, use_column_width=True)
-
-            st.session_state["dataset_path"] = dataset_path
-            st.session_state["dataset_type"] = dataset_type
-        else:
-            st.warning("No images found inside the dataset.")
-    else:
-        st.info("Upload a dataset zip file to proceed.")
-
-elif page == "Training":
-    st.title("Model Training")
-    dataset_path = st.session_state.get("dataset_path", None)
-    dataset_type = st.session_state.get("dataset_type", "flat")
-    model_choice = st.selectbox("Choose Model", ["ResNet50", "VGG16", "EfficientNetB0"])
-    epochs = st.slider("Epochs", 1, 20, 5)
-    batch_size = st.slider("Batch Size", 8, 64, 16)
-    
     if st.button("Start Training"):
-        if dataset_path and os.path.exists(dataset_path):
-            datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2 if dataset_type=="flat" else 0)
+        history = model.fit(train_gen, validation_data=val_gen, epochs=epochs)
+        st.session_state.model = model
+        st.session_state.history = history
+        st.session_state.train_gen = train_gen
+        st.session_state.val_gen = val_gen
+        st.success("Training completed!")
 
-            if dataset_type == "split":
-                train_dir = os.path.join(dataset_path, "train")
-                val_dir = os.path.join(dataset_path, "val") if os.path.exists(os.path.join(dataset_path, "val")) else train_dir
-                train_gen = datagen.flow_from_directory(train_dir, target_size=(224,224),
-                                                        batch_size=batch_size, class_mode="binary")
-                val_gen = datagen.flow_from_directory(val_dir, target_size=(224,224),
-                                                      batch_size=batch_size, class_mode="binary")
-            else:
-                train_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
-                                                        batch_size=batch_size, class_mode="binary", subset="training")
-                val_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
-                                                      batch_size=batch_size, class_mode="binary", subset="validation")
+# ---------------------
+# Evaluation
+# ---------------------
+if choice == "Evaluation" and st.session_state.model:
+    st.subheader("Model Evaluation")
+    model = st.session_state.model
+    val_gen = st.session_state.val_gen
+    preds = (model.predict(val_gen) > 0.5).astype(int)
+    y_true = val_gen.classes
 
-            model = build_model(model_choice)
-            history = model.fit(train_gen, validation_data=val_gen, epochs=epochs)
+    report = classification_report(y_true, preds, target_names=list(val_gen.class_indices.keys()), output_dict=True)
+    st.write(pd.DataFrame(report).transpose())
 
-            st.session_state["model"] = model
-            st.session_state["history"] = history.history
-            st.session_state["val_gen"] = val_gen
-            st.success("Training complete!")
+    cm = confusion_matrix(y_true, preds)
+    fig, ax = plt.subplots()
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=val_gen.class_indices.keys(), yticklabels=val_gen.class_indices.keys(), ax=ax)
+    ax.set_title("Confusion Matrix")
+    st.pyplot(fig)
 
-            fig, ax = plt.subplots()
-            ax.plot(history.history['accuracy'], label='train acc')
-            ax.plot(history.history['val_accuracy'], label='val acc')
-            ax.legend()
-            st.pyplot(fig)
-        else:
-            st.error("Please upload and explore dataset first.")
+    fpr, tpr, _ = roc_curve(y_true, preds)
+    roc_auc = auc(fpr, tpr)
+    fig, ax = plt.subplots()
+    ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+    ax.plot([0, 1], [0, 1], "--")
+    ax.set_title("ROC Curve")
+    ax.legend()
+    st.pyplot(fig)
 
-elif page == "Evaluation":
-    st.title("Model Evaluation")
-    if "model" in st.session_state and "val_gen" in st.session_state:
-        model = st.session_state["model"]
-        val_gen = st.session_state["val_gen"]
-
-        y_true = val_gen.classes
-        y_pred_probs = model.predict(val_gen)
-        y_pred = (y_pred_probs > 0.5).astype(int)
-
-        report = classification_report(y_true, y_pred, target_names=list(val_gen.class_indices.keys()), output_dict=True)
-        st.write(pd.DataFrame(report).transpose())
-
-        cm = confusion_matrix(y_true, y_pred)
-        fig, ax = plt.subplots()
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=val_gen.class_indices.keys(), yticklabels=val_gen.class_indices.keys())
-        plt.xlabel("Predicted")
-        plt.ylabel("True")
-        st.pyplot(fig)
-
-        if len(np.unique(y_true)) == 2:
-            roc_auc = roc_auc_score(y_true, y_pred_probs)
-            fpr, tpr, _ = roc_curve(y_true, y_pred_probs)
-            fig, ax = plt.subplots()
-            ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
-            ax.plot([0,1],[0,1],'--')
-            ax.set_xlabel("False Positive Rate")
-            ax.set_ylabel("True Positive Rate")
-            ax.legend()
-            st.pyplot(fig)
-    else:
-        st.warning("Please train a model first.")
-
-elif page == "Prediction":
-    st.title("TB Prediction")
-    uploaded_file = st.file_uploader("Upload a Chest X-ray", type=["jpg", "png", "jpeg"])
-    if uploaded_file and "model" in st.session_state:
-        img = load_image(uploaded_file)
-        st.image(img, caption="Uploaded Image")
-
-        img_resized = cv2.resize(img, (224,224)) / 255.0
-        pred = st.session_state["model"].predict(np.expand_dims(img_resized, axis=0))[0][0]
-        label = "Tuberculosis" if pred > 0.5 else "Normal"
-        st.success(f"Prediction: {label} (score: {pred:.2f})")
-    elif uploaded_file:
-        st.warning("Train a model first before prediction.")
+# ---------------------
+# Prediction
+# ---------------------
+if choice == "Prediction" and st.session_state.model:
+    st.subheader("Make a Prediction")
+    uploaded_img = st.file_uploader("Upload a chest X-ray image", type=["jpg", "jpeg", "png"])
+    if uploaded_img:
+        img = Image.open(uploaded_img).convert("RGB")
+        st.image(img, caption="Uploaded Image", use_column_width=True)
+        img_resized = img.resize((224, 224))
+        img_array = np.array(img_resized) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+        pred = st.session_state.model.predict(img_array)
+        label = "Tuberculosis" if pred[0][0] > 0.5 else "Normal"
+        st.write(f"### Prediction: {label}")

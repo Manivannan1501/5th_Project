@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import cv2
+import tempfile
+import zipfile
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import ResNet50, VGG16, EfficientNetB0
@@ -48,12 +50,26 @@ def build_model(model_name, input_shape=(224,224,3)):
     return model
 
 # -------------------------------
+# Dataset Upload Section (common)
+# -------------------------------
+def handle_dataset_upload():
+    uploaded_file = st.file_uploader("Upload dataset (zip file with class subfolders)", type=["zip"])
+    if uploaded_file:
+        tmp_dir = tempfile.mkdtemp()
+        with zipfile.ZipFile(uploaded_file, "r") as zip_ref:
+            zip_ref.extractall(tmp_dir)
+        st.success("Dataset extracted successfully!")
+        return tmp_dir
+    return None
+
+# -------------------------------
 # Pages
 # -------------------------------
 if page == "Introduction":
     st.title("Tuberculosis Detection Using Deep Learning")
     st.write("""
     This app allows you to:
+    - Upload dataset as a zip file
     - Explore the dataset (EDA)
     - Train deep learning models (ResNet50, VGG16, EfficientNetB0)
     - Evaluate models with metrics and plots
@@ -62,34 +78,39 @@ if page == "Introduction":
 
 elif page == "EDA":
     st.title("Exploratory Data Analysis")
-    data_dir = st.text_input("Enter dataset directory path:")
-    if data_dir and os.path.exists(data_dir):
-        classes = os.listdir(data_dir)
+    dataset_path = handle_dataset_upload()
+    if dataset_path:
+        classes = os.listdir(dataset_path)
         st.write("Classes found:", classes)
         
         img_paths = []
         labels = []
         for c in classes:
-            c_dir = os.path.join(data_dir, c)
-            files = os.listdir(c_dir)[:5]
-            for f in files:
-                img_paths.append(os.path.join(c_dir, f))
-                labels.append(c)
+            c_dir = os.path.join(dataset_path, c)
+            if os.path.isdir(c_dir):
+                files = os.listdir(c_dir)[:5]
+                for f in files:
+                    img_paths.append(os.path.join(c_dir, f))
+                    labels.append(c)
         
-        df = pd.DataFrame({"image": img_paths, "label": labels})
-        st.write(df.head())
-        
-        fig, ax = plt.subplots()
-        sns.countplot(x="label", data=df)
-        st.pyplot(fig)
-        
-        st.image(df["image"].iloc[0], caption=df["label"].iloc[0])
+        if img_paths:
+            df = pd.DataFrame({"image": img_paths, "label": labels})
+            st.write(df.head())
+            
+            fig, ax = plt.subplots()
+            sns.countplot(x="label", data=df)
+            st.pyplot(fig)
+            
+            st.image(df["image"].iloc[0], caption=df["label"].iloc[0])
+            st.session_state["dataset_path"] = dataset_path
+        else:
+            st.warning("No images found inside the dataset.")
     else:
-        st.warning("Please enter a valid dataset directory.")
+        st.info("Upload a dataset zip file to proceed.")
 
 elif page == "Training":
     st.title("Model Training")
-    dataset_path = st.text_input("Dataset directory path (with class subfolders):")
+    dataset_path = st.session_state.get("dataset_path", None)
     model_choice = st.selectbox("Choose Model", ["ResNet50", "VGG16", "EfficientNetB0"])
     epochs = st.slider("Epochs", 1, 20, 5)
     batch_size = st.slider("Batch Size", 8, 64, 16)
@@ -117,7 +138,7 @@ elif page == "Training":
             ax.legend()
             st.pyplot(fig)
         else:
-            st.error("Invalid dataset path.")
+            st.error("Please upload and explore dataset first.")
 
 elif page == "Evaluation":
     st.title("Model Evaluation")

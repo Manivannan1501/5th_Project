@@ -81,7 +81,7 @@ elif page == "EDA":
     st.title("Exploratory Data Analysis")
     dataset_path = handle_dataset_upload()
     if dataset_path:
-        classes = os.listdir(dataset_path)
+        classes = [c for c in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, c))]
         st.write("Classes found:", classes)
         
         img_paths = []
@@ -91,8 +91,10 @@ elif page == "EDA":
             if os.path.isdir(c_dir):
                 files = os.listdir(c_dir)[:8]  # take up to 8 samples per class
                 for f in files:
-                    img_paths.append(os.path.join(c_dir, f))
-                    labels.append(c)
+                    f_path = os.path.join(c_dir, f)
+                    if os.path.isfile(f_path):   # ✅ Only add actual files
+                        img_paths.append(f_path)
+                        labels.append(c)
         
         if img_paths:
             df = pd.DataFrame({"image": img_paths, "label": labels})
@@ -110,9 +112,10 @@ elif page == "EDA":
                     st.markdown(f"**Class: {c}**")
                     cols = st.columns(min(4, len(class_imgs)))
                     for idx, img_path in enumerate(class_imgs):
-                        img_pil = Image.open(img_path)
-                        with cols[idx % 4]:
-                            st.image(img_pil, use_column_width=True)
+                        if os.path.isfile(img_path):
+                            img_pil = Image.open(img_path)
+                            with cols[idx % 4]:
+                                st.image(img_pil, use_column_width=True)
             
             st.session_state["dataset_path"] = dataset_path
         else:

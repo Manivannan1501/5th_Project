@@ -14,6 +14,7 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+from PIL import Image
 
 # -------------------------------
 # Sidebar Navigation
@@ -88,7 +89,7 @@ elif page == "EDA":
         for c in classes:
             c_dir = os.path.join(dataset_path, c)
             if os.path.isdir(c_dir):
-                files = os.listdir(c_dir)[:5]
+                files = os.listdir(c_dir)[:8]  # take up to 8 samples per class
                 for f in files:
                     img_paths.append(os.path.join(c_dir, f))
                     labels.append(c)
@@ -101,7 +102,18 @@ elif page == "EDA":
             sns.countplot(x="label", data=df)
             st.pyplot(fig)
             
-            st.image(df["image"].iloc[0], caption=df["label"].iloc[0])
+            # Show grid of images per class
+            st.subheader("Sample Images from Dataset")
+            for c in classes:
+                class_imgs = df[df["label"] == c]["image"].tolist()
+                if class_imgs:
+                    st.markdown(f"**Class: {c}**")
+                    cols = st.columns(min(4, len(class_imgs)))
+                    for idx, img_path in enumerate(class_imgs):
+                        img_pil = Image.open(img_path)
+                        with cols[idx % 4]:
+                            st.image(img_pil, use_column_width=True)
+            
             st.session_state["dataset_path"] = dataset_path
         else:
             st.warning("No images found inside the dataset.")

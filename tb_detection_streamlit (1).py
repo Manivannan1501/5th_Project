@@ -7,6 +7,7 @@ import os
 import cv2
 import tempfile
 import zipfile
+import shutil
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import ResNet50, VGG16, EfficientNetB0
@@ -50,11 +51,8 @@ def build_model(model_name, input_shape=(224,224,3)):
     model.compile(optimizer=Adam(1e-4), loss="binary_crossentropy", metrics=["accuracy"])
     return model
 
-# -------------------------------
-# Dataset Upload Section (common)
-# -------------------------------
 def handle_dataset_upload():
-    uploaded_file = st.file_uploader("Upload dataset (zip file with class subfolders)", type=["zip"])
+    uploaded_file = st.file_uploader("Upload dataset (zip file with class subfolders or train/val/test)", type=["zip"])
     if uploaded_file:
         tmp_dir = tempfile.mkdtemp()
         with zipfile.ZipFile(uploaded_file, "r") as zip_ref:
@@ -62,6 +60,13 @@ def handle_dataset_upload():
         st.success("Dataset extracted successfully!")
         return tmp_dir
     return None
+
+def detect_dataset_structure(base_path):
+    """Detect if dataset has train/val/test structure or just class folders."""
+    subdirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+    if set([s.lower() for s in subdirs]) >= set(["train", "test"]):
+        return "split"
+    return "flat"
 
 # -------------------------------
 # Pages
@@ -81,33 +86,31 @@ elif page == "EDA":
     st.title("Exploratory Data Analysis")
     dataset_path = handle_dataset_upload()
     if dataset_path:
-        classes = [c for c in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, c))]
-        st.write("Classes found:", classes)
-        
-        img_paths = []
-        labels = []
-        for c in classes:
-            c_dir = os.path.join(dataset_path, c)
-            if os.path.isdir(c_dir):
-                files = os.listdir(c_dir)[:8]  # take up to 8 samples per class
-                for f in files:
-                    f_path = os.path.join(c_dir, f)
-                    if os.path.isfile(f_path):   # ✅ Only add actual files
-                        img_paths.append(f_path)
-                        labels.append(c)
-        
+        dataset_type = detect_dataset_structure(dataset_path)
+        st.write(f"Detected dataset type: **{dataset_type}**")
+
+        # Recursive scan of images
+        img_paths, labels = [], []
+        for root, dirs, files in os.walk(dataset_path):
+            for f in files:
+                if f.lower().endswith((".jpg", ".jpeg", ".png")):
+                    img_paths.append(os.path.join(root, f))
+                    labels.append(os.path.basename(os.path.dirname(os.path.join(root, f))))
+
         if img_paths:
             df = pd.DataFrame({"image": img_paths, "label": labels})
             st.write(df.head())
-            
+
             fig, ax = plt.subplots()
             sns.countplot(x="label", data=df)
             st.pyplot(fig)
-            
+
             # Show grid of images per class
             st.subheader("Sample Images from Dataset")
+            sample_count = st.slider("Number of images per class to preview", 4, 20, 8)
+            classes = df["label"].unique()
             for c in classes:
-                class_imgs = df[df["label"] == c]["image"].tolist()
+                class_imgs = df[df["label"] == c]["image"].tolist()[:sample_count]
                 if class_imgs:
                     st.markdown(f"**Class: {c}**")
                     cols = st.columns(min(4, len(class_imgs)))
@@ -116,8 +119,9 @@ elif page == "EDA":
                             img_pil = Image.open(img_path)
                             with cols[idx % 4]:
                                 st.image(img_pil, use_column_width=True)
-            
+
             st.session_state["dataset_path"] = dataset_path
+            st.session_state["dataset_type"] = dataset_type
         else:
             st.warning("No images found inside the dataset.")
     else:
@@ -126,27 +130,36 @@ elif page == "EDA":
 elif page == "Training":
     st.title("Model Training")
     dataset_path = st.session_state.get("dataset_path", None)
+    dataset_type = st.session_state.get("dataset_type", "flat")
     model_choice = st.selectbox("Choose Model", ["ResNet50", "VGG16", "EfficientNetB0"])
     epochs = st.slider("Epochs", 1, 20, 5)
     batch_size = st.slider("Batch Size", 8, 64, 16)
     
     if st.button("Start Training"):
         if dataset_path and os.path.exists(dataset_path):
-            datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
-            train_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
-                                                    batch_size=batch_size, class_mode="binary", subset="training")
-            val_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
-                                                  batch_size=batch_size, class_mode="binary", subset="validation")
-            
+            datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2 if dataset_type=="flat" else 0)
+
+            if dataset_type == "split":
+                train_dir = os.path.join(dataset_path, "train")
+                val_dir = os.path.join(dataset_path, "val") if os.path.exists(os.path.join(dataset_path, "val")) else train_dir
+                train_gen = datagen.flow_from_directory(train_dir, target_size=(224,224),
+                                                        batch_size=batch_size, class_mode="binary")
+                val_gen = datagen.flow_from_directory(val_dir, target_size=(224,224),
+                                                      batch_size=batch_size, class_mode="binary")
+            else:
+                train_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
+                                                        batch_size=batch_size, class_mode="binary", subset="training")
+                val_gen = datagen.flow_from_directory(dataset_path, target_size=(224,224),
+                                                      batch_size=batch_size, class_mode="binary", subset="validation")
+
             model = build_model(model_choice)
             history = model.fit(train_gen, validation_data=val_gen, epochs=epochs)
-            
+
             st.session_state["model"] = model
             st.session_state["history"] = history.history
             st.session_state["val_gen"] = val_gen
             st.success("Training complete!")
-            
-            # Plot training curve
+
             fig, ax = plt.subplots()
             ax.plot(history.history['accuracy'], label='train acc')
             ax.plot(history.history['val_accuracy'], label='val acc')
@@ -160,25 +173,21 @@ elif page == "Evaluation":
     if "model" in st.session_state and "val_gen" in st.session_state:
         model = st.session_state["model"]
         val_gen = st.session_state["val_gen"]
-        
-        # Predictions
+
         y_true = val_gen.classes
         y_pred_probs = model.predict(val_gen)
         y_pred = (y_pred_probs > 0.5).astype(int)
-        
-        # Classification Report
+
         report = classification_report(y_true, y_pred, target_names=list(val_gen.class_indices.keys()), output_dict=True)
         st.write(pd.DataFrame(report).transpose())
-        
-        # Confusion Matrix
+
         cm = confusion_matrix(y_true, y_pred)
         fig, ax = plt.subplots()
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=val_gen.class_indices.keys(), yticklabels=val_gen.class_indices.keys())
         plt.xlabel("Predicted")
         plt.ylabel("True")
         st.pyplot(fig)
-        
-        # ROC Curve
+
         if len(np.unique(y_true)) == 2:
             roc_auc = roc_auc_score(y_true, y_pred_probs)
             fpr, tpr, _ = roc_curve(y_true, y_pred_probs)
@@ -198,7 +207,7 @@ elif page == "Prediction":
     if uploaded_file and "model" in st.session_state:
         img = load_image(uploaded_file)
         st.image(img, caption="Uploaded Image")
-        
+
         img_resized = cv2.resize(img, (224,224)) / 255.0
         pred = st.session_state["model"].predict(np.expand_dims(img_resized, axis=0))[0][0]
         label = "Tuberculosis" if pred > 0.5 else "Normal"
